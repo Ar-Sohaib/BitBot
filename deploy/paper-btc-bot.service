@@ -1,0 +1,27 @@
+[Unit]
+Description=Paper BTC Trading Bot (paper trading only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=paperbot
+Group=paperbot
+WorkingDirectory=/opt/paper-btc-bot
+EnvironmentFile=/opt/paper-btc-bot/.env
+ExecStart=/opt/paper-btc-bot/.venv/bin/python -m src.main_live
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=paper-btc-bot
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/paper-btc-bot/data /opt/paper-btc-bot/logs
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
