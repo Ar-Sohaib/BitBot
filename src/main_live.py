@@ -361,8 +361,6 @@ def send_pending_notifications(
             _log.error("Failed to send pending notification for trade %s: %s", trade.get("trade_id", "unknown"), exc)
     
     return sent_count
-    
-    return sent_count
 
 
 def purge_old_notifications(db: Database) -> int:
