@@ -320,6 +320,10 @@ def send_pending_notifications(
     sent_count = 0
     for trade in unsent:
         try:
+            # Convert Row to dict for easier access
+            if not isinstance(trade, dict):
+                trade = dict(trade)
+            
             # Check if already sent via dispatcher (legacy check)
             if dispatcher.should_send_trade(trade["trade_id"]):
                 # Send notification
@@ -354,7 +358,9 @@ def send_pending_notifications(
             _log.info("Sent pending notification for trade_id=%s", trade["trade_id"])
             
         except Exception as exc:
-            _log.error("Failed to send pending notification for trade %s: %s", trade["trade_id"], exc)
+            _log.error("Failed to send pending notification for trade %s: %s", trade.get("trade_id", "unknown"), exc)
+    
+    return sent_count
     
     return sent_count
 
