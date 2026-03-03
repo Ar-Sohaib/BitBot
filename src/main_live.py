@@ -11,6 +11,7 @@ from src.broker.paper_broker import PaperBroker
 from src.broker.risk import compute_drawdown, compute_equity
 from src.config import load_settings
 from src.notify.telegram import TelegramNotifier
+from src.notify.dispatcher import TelegramDispatcher
 from src.price_feed.rest_provider import BinanceRestProvider, filter_closed_candles
 from src.storage.db import Database
 from src.strategy.ma_cross import MovingAverageCrossStrategy
@@ -39,16 +40,30 @@ def process_once(
     broker: PaperBroker,
     strategy: MovingAverageCrossStrategy,
     notifier: TelegramNotifier,
+    dispatcher: TelegramDispatcher,
     settings,
 ) -> int:
     provider = BinanceRestProvider()
 
     try:
         candles = provider.fetch_klines(settings.symbol, settings.timeframe, limit=max(120, settings.ma_slow + 20))
-        notifier.notify_feed_recovered()
+        
+        # Check if feed was down and is now recovered
+        if dispatcher.should_send_feed_ok():
+            downtime = dispatcher.get_feed_downtime_seconds()
+            text = notifier.format_feed_ok("Binance REST", downtime)
+            notifier.send_message(text)
+            dispatcher.mark_feed_ok()
+            
     except Exception as exc:
         _log.error("Feed error: %s", exc)
-        notifier.notify_feed_down(str(exc))
+        
+        # Check if we should send feed down alert
+        if dispatcher.should_send_feed_down():
+            text = notifier.format_feed_down("Binance REST", str(exc), 1, 1.5, False)
+            notifier.send_message(text)
+            dispatcher.mark_feed_down()
+        
         return 0
 
     closed = filter_closed_candles(candles)
@@ -95,38 +110,43 @@ def process_once(
         )
 
         if result.executed:
-            _log.info(
-                "trade_exec trade_id=%s side=%s price_market=%.2f price_exec=%.2f "
-                "qty=%.8f fee=%.4f pnl_realized=%.4f",
-                result.trade_id,
-                result.side,
-                result.price_market,
-                result.price_exec,
-                result.qty_btc,
-                result.fee,
-                result.pnl_realized,
-            )
-            notifier.notify_trade(
-                result,
-                market_price=candle.close,
-                cash=state_after.cash,
-                btc_qty=state_after.btc_qty,
-                slippage_rate=settings.slippage_rate,
-            )
+            # Check if we should send trade notification
+            if dispatcher.should_send_trade(result.trade_id):
+                _log.info(
+                    "trade_exec trade_id=%s side=%s price_market=%.2f price_exec=%.2f "
+                    "qty=%.8f fee=%.4f pnl_realized=%.4f",
+                    result.trade_id,
+                    result.side,
+                    result.price_market,
+                    result.price_exec,
+                    result.qty_btc,
+                    result.fee,
+                    result.pnl_realized,
+                )
+                notifier.notify_trade(
+                    result,
+                    market_price=candle.close,
+                    cash=state_after.cash,
+                    btc_qty=state_after.btc_qty,
+                    slippage_rate=settings.slippage_rate,
+                )
+                dispatcher.mark_trade_sent(result.trade_id)
 
         if state_after.is_blocked and not state_before.is_blocked:
             equity = compute_equity(state_after.cash, state_after.btc_qty, candle.close)
             dd = compute_drawdown(equity, state_after.peak_equity)
-            notifier.notify_kill_switch(
+            text = notifier.format_kill_switch(
                 drawdown=dd,
                 threshold=settings.kill_switch_drawdown_pct,
                 equity=equity,
+                position_btc=state_after.btc_qty,
             )
+            notifier.send_message(text)
 
         last_processed = candle.open_time
         processed += 1
 
-    _maybe_send_daily_report(db, broker, notifier, settings, last_price=closed[-1].close if closed else 0.0)
+    _maybe_send_daily_report(db, broker, notifier, dispatcher, settings, last_price=closed[-1].close if closed else 0.0)
     return processed
 
 
@@ -134,6 +154,7 @@ def _maybe_send_daily_report(
     db: Database,
     broker: PaperBroker,
     notifier: TelegramNotifier,
+    dispatcher: TelegramDispatcher,
     settings,
     last_price: float,
 ) -> None:
@@ -147,20 +168,24 @@ def _maybe_send_daily_report(
         return
 
     if last_marker != current_local_day:
-        # apply daily top-up for the new day (if enabled)
-        added = broker.apply_daily_topup(int(now_utc.timestamp() * 1000), last_price)
-        if added > 0:
-            notifier.notify_alert(f"Applied daily top-up: {added:.2f}")
+        # Check if we should send daily report (rate limit 1/day)
+        if dispatcher.should_send_daily_report(current_local_day):
+            # apply daily top-up for the new day (if enabled)
+            added = broker.apply_daily_topup(int(now_utc.timestamp() * 1000), last_price)
+            if added > 0:
+                notifier.notify_alert(f"Applied daily top-up: {added:.2f}")
 
-        report_day = previous_day_in_tz(now_utc, settings.report_tz)
-        report = build_daily_report(
-            db=db,
-            day=report_day,
-            tz_name=settings.report_tz,
-            wallet=broker.get_state(),
-            btc_price_end=last_price,
-        )
-        notifier.notify_daily_report(report)
+            report_day = previous_day_in_tz(now_utc, settings.report_tz)
+            report = build_daily_report(
+                db=db,
+                day=report_day,
+                tz_name=settings.report_tz,
+                wallet=broker.get_state(),
+                btc_price_end=last_price,
+            )
+            notifier.notify_daily_report(report)
+            dispatcher.mark_daily_report_sent(current_local_day)
+        
         db.set_bot_state("last_report_marker", current_local_day)
 
 
@@ -179,26 +204,26 @@ def main() -> None:
         chat_id=settings.telegram_chat_id,
         tz_name=settings.report_tz,
     )
+    dispatcher = TelegramDispatcher(db=db, tz_name=settings.report_tz)
 
     _log.info("Live paper trading started for %s %s", settings.symbol, settings.timeframe)
-    notifier.notify_bot_start(settings.symbol, settings.timeframe)
+    
+    # Check if we should send startup notification
+    if dispatcher.should_send_startup():
+        text = notifier.format_startup(settings.symbol, settings.timeframe, "Binance REST")
+        notifier.send_message(text)
+        dispatcher.mark_startup_sent()
 
     try:
         while True:
             try:
-                processed = process_once(db, broker, strategy, notifier, settings)
+                processed = process_once(db, broker, strategy, notifier, dispatcher, settings)
                 _log.info("Loop done processed=%s", processed)
             except Exception as exc:
                 _log.exception("Unhandled error in loop: %s", exc)
             time.sleep(settings.poll_seconds)
     except KeyboardInterrupt:
         _log.info("Stopped by user")
-    finally:
-        db.close()
-
-
-if __name__ == "__main__":
-    main()
     finally:
         db.close()
 

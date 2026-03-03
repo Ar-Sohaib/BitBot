@@ -71,9 +71,11 @@ def build_daily_report(
 
 
 
-def render_daily_report_text(report: DailyReport) -> str:
+def render_daily_report_text(report: DailyReport, generated_at: str | None = None, tz_name: str = "Europe/Paris") -> str:
+    ts = generated_at or datetime.now(tz=ZoneInfo(tz_name)).strftime("%H:%M:%S | %Y-%m-%d")
     return (
         f"[DAILY REPORT][PAPER][BTC] {report.day}\n"
+        f"Time: {ts} ({tz_name})\n"
         f"Equity: {report.equity_start:.1f} → {report.equity_end:.1f}  "
         f"(PnL {report.pnl_abs:+.1f} / {report.pnl_pct:+.2%})\n"
         f"Trades: {report.trades_count} (BUY {report.buy_count} / SELL {report.sell_count})\n"

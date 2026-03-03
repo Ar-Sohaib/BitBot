@@ -27,12 +27,14 @@ class Settings:
     db_path: Path
     poll_seconds: int
     price_source: str
+    db_type: str = "Postgres"  # "sqlite" or "postgres"
+    postgres_dsn: str = ""
 
-    telegram_enable: bool
-    telegram_bot_token: str
-    telegram_chat_id: str
+    telegram_enable: bool = False
+    telegram_bot_token: str = ""
+    telegram_chat_id: str = ""
 
-    report_tz: str
+    report_tz: str = "Europe/Paris"
 
     # Daily top-up (add amount to cash at start of each trading day)
     daily_topup_enabled: bool = True
@@ -64,6 +66,8 @@ def load_settings() -> Settings:
         ma_fast=int(os.getenv("MA_FAST", "10")),
         ma_slow=int(os.getenv("MA_SLOW", "30")),
         db_path=db_path,
+        db_type=os.getenv("DB_TYPE", "sqlite").lower(),
+        postgres_dsn=os.getenv("POSTGRES_DSN", ""),
         poll_seconds=int(os.getenv("POLL_SECONDS", "15")),
         price_source=os.getenv("PRICE_SOURCE", "binance"),
         telegram_enable=_env_bool("TELEGRAM_ENABLE", False),

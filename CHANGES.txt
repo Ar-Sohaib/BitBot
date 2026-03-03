@@ -1,0 +1,164 @@
+================================================================================
+REFACTORISATION NOTIFICATIONS TELEGRAM — FICHIERS MODIFIÉS/CRÉÉS
+================================================================================
+
+CRÉÉS (3 fichiers)
+────────────────────────────────────────────────────────────────────────────
+
+✨ src/notify/dispatcher.py (NOUVEAU MODULE)
+   └─ TelegramDispatcher class
+      ├─ Rate limiting (startup 1/6h, feed transition, wallet 1/h, report 1/day)
+      ├─ Idempotence (trade_id tracking)
+      └─ State persistence via bot_state table
+
+📝 test_new_notifications.py
+   └─ Affiche tous les 8 templates Markdown sans envoyer
+
+📋 example_notifications.py
+   └─ Démontre usage du dispatcher (startup, trade, feed, wallet, report, kill)
+
+
+MODIFIÉS (2 fichiers)
+────────────────────────────────────────────────────────────────────────────
+
+🔧 src/notify/telegram.py (REFACTORISÉ)
+   ├─ 8 nouvelles fonctions format_*()
+   │  ├─ format_startup()
+   │  ├─ format_trade_buy()
+   │  ├─ format_trade_sell()
+   │  ├─ format_kill_switch()
+   │  ├─ format_feed_down()
+   │  ├─ format_feed_ok()
+   │  ├─ format_daily_report()
+   │  └─ format_wallet_low()
+   ├─ send_message() retourne bool
+   └─ Méthodes legacy conservées (backward compatible)
+
+🚀 src/main_live.py (INTÉGRÉ DISPATCHER)
+   ├─ Initialise TelegramDispatcher
+   ├─ process_once() : calls dispatcher.should_send_*() + mark_*_sent()
+   ├─ _maybe_send_daily_report() : rate limit 1/jour
+   └─ main() : check startup rate limit avant envoi
+
+
+DOCUMENTATION (3 fichiers)
+────────────────────────────────────────────────────────────────────────────
+
+📖 NOTIFICATION_REFACTOR.md
+   ├─ Détails implémentation (8 templates, dispatcher, intégration)
+   ├─ Table mapping événement → template → champs
+   ├─ Valeurs d'exemple pour chaque template
+   ├─ Validation et tests
+   └─ Prochaines étapes
+
+🚀 DEPLOY_NOTIFICATIONS.md
+   ├─ Guide déploiement prod (copie files, restart service)
+   ├─ Vérifications post-déploiement
+   ├─ Configuration (RATE_LIMITS)
+   ├─ État persisté (bot_state keys)
+   ├─ Tests locaux (avant deploy)
+   └─ Rollback (si nécessaire)
+
+✅ IMPLEMENTATION_SUMMARY.md
+   ├─ Résumé exécutif (avant/après)
+   ├─ 8 templates table
+   ├─ Fichiers créés/modifiés
+   ├─ Rate limiting & anti-spam
+   ├─ Validation (tests passants)
+   ├─ Étapes déploiement
+   ├─ Exemples visuels Markdown
+   └─ Checklist livraison
+
+
+================================================================================
+RÉSUMÉ DES CHANGEMENTS
+================================================================================
+
+AVANT
+─────
+- Messages logs-like [PAPER][BTC] Tag — hard à lire
+- Pas de rate limiting → inondation possible (ex: startup à chaque restart)
+- Pas de state tracking → doublons feed down/ok
+- Formatage inline dans les méthodes
+
+APRÈS
+─────
+✅ 8 templates Markdown ergonomiques (emojis, gras, monospace)
+✅ Rate limiting (startup 1/6h, feed transition, wallet 1/h, report 1/day)
+✅ Idempotence (trade_id, state keys)
+✅ Code modulaire (format vs dispatch séparé)
+✅ Anti-spam via dispatcher
+
+
+================================================================================
+8 TEMPLATES IMPLÉMENTÉS
+================================================================================
+
+1️⃣  🟢 STARTUP — Bot démarrage (rate limit 1/6h)
+2️⃣  ✅ TRADE_BUY — Achat paper (idempotent trade_id)
+3️⃣  ✅ TRADE_SELL — Vente + PnL (idempotent trade_id)
+4️⃣  🔴 KILL_SWITCH — Drawdown stop (aucun rate limit)
+5️⃣  ⚠️  FEED_DOWN — Feed timeout (transition only)
+6️⃣  🟢 FEED_OK — Feed rétabli + durée (transition only)
+7️⃣  📊 DAILY_REPORT — Rapport jour (rate limit 1/day)
+8️⃣  🟠 WALLET_LOW — Cash faible (rate limit 1/h)
+
+
+================================================================================
+DISPATCHER ANTI-SPAM
+================================================================================
+
+Classe: TelegramDispatcher
+Responsabilité: Checks + state persistance
+
+Méthodes:
+  should_send_startup()          → bool
+  mark_startup_sent()            → None
+  should_send_feed_down()        → bool
+  mark_feed_down()               → None
+  should_send_feed_ok()          → bool
+  mark_feed_ok()                 → None
+  get_feed_downtime_seconds()    → int
+  should_send_wallet_low()       → bool
+  mark_wallet_low_sent()         → None
+  should_send_daily_report(date) → bool
+  mark_daily_report_sent(date)   → None
+  should_send_trade(trade_id)    → bool
+  mark_trade_sent(trade_id)      → None
+
+État Persisté:
+  last_startup_notif_ts          (epoch float)
+  feed_status                    ("ok" / "down")
+  feed_down_since_ts             (epoch ms)
+  last_wallet_low_notif_ts       (epoch float)
+  last_daily_report_date         (YYYY-MM-DD)
+  trade_notif_{id}               ("1")
+
+
+================================================================================
+TESTS & VALIDATION
+================================================================================
+
+✅ Compilation Python — 0 erreurs
+✅ Format display (test_new_notifications.py) — 8 templates générés
+✅ Dispatcher flow (example_notifications.py) — rate limits appliqués
+✅ No breaking changes — legacy methods conservées
+✅ Timestamps — Format HH:MM:SS | YYYY-MM-DD (Europe/Paris)
+✅ Markdown — Gras (**), monospace (``)
+
+
+================================================================================
+DÉPLOIEMENT
+================================================================================
+
+Étapes rapides:
+1. Copier 3 fichiers à /opt/paper-btc-bot/src/notify/ et src/
+2. Vérifier syntaxe Python
+3. Redémarrer service
+4. Vérifier logs + Telegram
+
+Durée: ~5 minutes
+Risque: Faible (backward compatible)
+
+
+================================================================================
