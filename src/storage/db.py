@@ -317,8 +317,9 @@ class Database:
             sql = """
             INSERT INTO trades(
                 trade_id, ts, side, symbol, timeframe, source_open_time, qty_btc,
-                price_market, price_exec, fee, cash_after, btc_after, pnl_realized, reason, meta_json
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                price_market, price_exec, fee, cash_after, btc_after, pnl_realized, reason, meta_json,
+                notif_sent, notif_sent_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """
             self._execute(
                 sql,
@@ -338,6 +339,8 @@ class Database:
                     payload["pnl_realized"],
                     payload.get("reason", ""),
                     payload.get("meta_json", ""),
+                    payload.get("notif_sent", False),
+                    payload.get("notif_sent_at", 0),
                 ),
                 commit=False,
             )
@@ -346,8 +349,9 @@ class Database:
                 """
                 INSERT INTO trades(
                     trade_id, ts, side, symbol, timeframe, source_open_time, qty_btc,
-                    price_market, price_exec, fee, cash_after, btc_after, pnl_realized, reason, meta_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    price_market, price_exec, fee, cash_after, btc_after, pnl_realized, reason, meta_json,
+                    notif_sent, notif_sent_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     payload["trade_id"],
@@ -365,6 +369,8 @@ class Database:
                     payload["pnl_realized"],
                     payload.get("reason", ""),
                     payload.get("meta_json", ""),
+                    payload.get("notif_sent", False),
+                    payload.get("notif_sent_at", 0),
                 ),
                 commit=False,
             )
@@ -477,3 +483,119 @@ class Database:
                 (start_ts, end_ts),
                 commit=False,
             ).fetchall()
+
+    def get_unsent_trade_notifications(self) -> list[dict]:
+        """Get all trades where notification has not been sent."""
+        if self._pg:
+            cur = self._execute(
+                """
+                SELECT *
+                FROM trades
+                WHERE notif_sent = FALSE
+                ORDER BY ts ASC
+                """,
+                (),
+                commit=False,
+            )
+            return cur.fetchall()
+        else:
+            return self._execute(
+                """
+                SELECT *
+                FROM trades
+                WHERE notif_sent = 0
+                ORDER BY ts ASC
+                """,
+                (),
+                commit=False,
+            ).fetchall()
+
+    def mark_trade_notification_sent(self, trade_id: str, sent_at: int) -> None:
+        """Mark a trade notification as sent."""
+        if self._pg:
+            self._execute(
+                """
+                UPDATE trades
+                SET notif_sent = TRUE, notif_sent_at = %s
+                WHERE trade_id = %s
+                """,
+                (sent_at, trade_id),
+            )
+        else:
+            self._execute(
+                """
+                UPDATE trades
+                SET notif_sent = 1, notif_sent_at = ?
+                WHERE trade_id = ?
+                """,
+                (sent_at, trade_id),
+            )
+
+    def insert_sent_notification(self, event_id: str, ts: int, notif_type: str, details_json: str = "") -> bool:
+        """Insert notification record for idempotence. Returns True if inserted, False if already exists."""
+        if self._pg:
+            try:
+                sql = """
+                INSERT INTO sent_notifications(event_id, ts, type, details_json)
+                VALUES(%s, %s, %s, %s)
+                ON CONFLICT(event_id) DO NOTHING
+                """
+                cur = self._execute(sql, (event_id, ts, notif_type, details_json))
+                return cur.rowcount > 0
+            except Exception:
+                return False
+        else:
+            try:
+                cur = self._execute(
+                    """
+                    INSERT OR IGNORE INTO sent_notifications(event_id, ts, type, details_json)
+                    VALUES(?, ?, ?, ?)
+                    """,
+                    (event_id, ts, notif_type, details_json),
+                )
+                return cur.rowcount > 0
+            except Exception:
+                return False
+
+    def purge_old_sent_notifications(self, older_than_ts: int) -> int:
+        """Delete sent_notifications older than given timestamp. Returns count deleted."""
+        if self._pg:
+            cur = self._execute(
+                "DELETE FROM sent_notifications WHERE ts < %s",
+                (older_than_ts,),
+            )
+            return cur.rowcount
+        else:
+            cur = self._execute(
+                "DELETE FROM sent_notifications WHERE ts < ?",
+                (older_than_ts,),
+            )
+            return cur.rowcount
+
+    def run_migration(self, migration_path: Path) -> None:
+        """Run a migration SQL file."""
+        sql = migration_path.read_text(encoding="utf-8")
+        if self._pg:
+            # Split on semicolon and execute statements individually for psycopg2
+            cur = self.conn.cursor()
+            for stmt in [s.strip() for s in sql.split(";") if s.strip()]:
+                try:
+                    cur.execute(stmt)
+                except Exception as exc:
+                    # Ignore errors for ALTER TABLE ADD COLUMN if column already exists
+                    if "already exists" in str(exc).lower() or "duplicate column" in str(exc).lower():
+                        continue
+                    raise
+            self.conn.commit()
+            cur.close()
+        else:
+            # For SQLite, handle each statement individually
+            for stmt in [s.strip() for s in sql.split(";") if s.strip()]:
+                try:
+                    self.conn.execute(stmt)
+                except Exception as exc:
+                    # Ignore errors for duplicate columns/indexes
+                    if "duplicate column" in str(exc).lower() or "already exists" in str(exc).lower():
+                        continue
+                    raise
+            self.conn.commit()

@@ -37,6 +37,8 @@ CREATE TABLE IF NOT EXISTS trades (
     pnl_realized REAL NOT NULL DEFAULT 0,
     reason TEXT DEFAULT '',
     meta_json TEXT DEFAULT '',
+    notif_sent BOOLEAN DEFAULT FALSE,
+    notif_sent_at BIGINT DEFAULT 0,
     UNIQUE(symbol, timeframe, source_open_time)
 );
 
@@ -53,3 +55,15 @@ CREATE TABLE IF NOT EXISTS bot_state (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS sent_notifications (
+    event_id TEXT PRIMARY KEY,
+    ts BIGINT NOT NULL,
+    type TEXT NOT NULL,
+    details_json TEXT DEFAULT ''
+);
+
+-- Indexes for better query performance
+CREATE INDEX IF NOT EXISTS idx_trades_notif_sent ON trades(notif_sent, ts);
+CREATE INDEX IF NOT EXISTS idx_candles_lookup ON candles(symbol, timeframe, open_time);
+CREATE INDEX IF NOT EXISTS idx_sent_notifications_ts ON sent_notifications(ts);

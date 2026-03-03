@@ -131,6 +131,11 @@ def process_once(
                     slippage_rate=settings.slippage_rate,
                 )
                 dispatcher.mark_trade_sent(result.trade_id)
+                # Mark notification as sent in the database
+                db.mark_trade_notification_sent(result.trade_id, int(time.time() * 1000))
+            else:
+                # Already sent via dispatcher, just mark in DB if not already
+                db.mark_trade_notification_sent(result.trade_id, int(time.time() * 1000))
 
         if state_after.is_blocked and not state_before.is_blocked:
             equity = compute_equity(state_after.cash, state_after.btc_qty, candle.close)
@@ -148,6 +153,226 @@ def process_once(
 
     _maybe_send_daily_report(db, broker, notifier, dispatcher, settings, last_price=closed[-1].close if closed else 0.0)
     return processed
+
+
+def _timeframe_to_ms(timeframe: str) -> int:
+    """Convert timeframe string to milliseconds."""
+    unit = timeframe[-1].lower()
+    amount = int(timeframe[:-1])
+    
+    if unit == "m":
+        return amount * 60 * 1000
+    elif unit == "h":
+        return amount * 3600 * 1000
+    elif unit == "d":
+        return amount * 86400 * 1000
+    elif unit == "w":
+        return amount * 7 * 86400 * 1000
+    else:
+        raise ValueError(f"Unsupported timeframe: {timeframe}")
+
+
+def recover_missing_candles(
+    db: Database,
+    broker: PaperBroker,
+    strategy: MovingAverageCrossStrategy,
+    notifier: TelegramNotifier,
+    dispatcher: TelegramDispatcher,
+    settings,
+) -> int:
+    """Recover missing candles since last processed time.
+    
+    This function fetches all missing candles since last_processed_open_time
+    and processes them chronologically to fill the gap.
+    
+    Returns:
+        Number of candles recovered and processed
+    """
+    provider = BinanceRestProvider()
+    
+    last_processed_raw = db.get_bot_state("last_processed_open_time")
+    if not last_processed_raw:
+        _log.info("No last_processed_open_time found, skipping recovery")
+        return 0
+    
+    last_processed = int(last_processed_raw)
+    timeframe_ms = _timeframe_to_ms(settings.timeframe)
+    
+    # Start from the next candle after last processed
+    start_time = last_processed + timeframe_ms
+    now_ms = int(time.time() * 1000)
+    
+    # Calculate expected candles to recover
+    expected_count = (now_ms - start_time) // timeframe_ms
+    
+    if expected_count <= 0:
+        _log.info("No missing candles to recover")
+        return 0
+    
+    _log.info(
+        "Starting recovery: last_processed=%d start_time=%d now=%d expected_candles=%d",
+        last_processed, start_time, now_ms, expected_count
+    )
+    
+    recovered_count = 0
+    batch_size = 1000  # Max Binance allows
+    current_start = start_time
+    
+    while current_start < now_ms:
+        try:
+            # Fetch batch of candles
+            candles = provider.fetch_klines(
+                settings.symbol,
+                settings.timeframe,
+                limit=batch_size,
+                start_time=current_start
+            )
+            
+            if not candles:
+                break
+            
+            # Filter to only closed candles
+            closed = filter_closed_candles(candles)
+            
+            if not closed:
+                break
+            
+            # Process each candle
+            for candle in closed:
+                # Skip if already processed (safety check)
+                if candle.open_time <= last_processed:
+                    continue
+                
+                # Insert candle
+                db.insert_candle(candle)
+                
+                # Get position before
+                state_before = broker.get_state()
+                
+                # Generate signal
+                closes = db.get_recent_closes(settings.symbol, settings.timeframe, settings.ma_slow + 2)
+                signal = strategy.generate_signal(
+                    ts=candle.close_time,
+                    symbol=settings.symbol,
+                    timeframe=settings.timeframe,
+                    closes=closes,
+                    in_position=state_before.btc_qty > 0,
+                )
+                db.insert_signal(signal)
+                
+                # Execute signal
+                result = broker.execute_signal(signal, candle)
+                
+                # Get position after
+                state_after = broker.get_state()
+                
+                # Log recovery progress
+                _log.info(
+                    "recovery_candle ts=%d close=%.2f signal=%s executed=%s",
+                    candle.close_time,
+                    candle.close,
+                    signal.signal,
+                    result.executed
+                )
+                
+                # Note: Don't send notifications during recovery
+                # They will be sent by send_pending_notifications() later
+                
+                last_processed = candle.open_time
+                recovered_count += 1
+            
+            # Move to next batch
+            if len(closed) < batch_size:
+                break
+            
+            current_start = closed[-1].open_time + timeframe_ms
+            
+        except Exception as exc:
+            _log.error("Error during recovery: %s", exc)
+            break
+    
+    _log.info(
+        "Recovery complete: recovered=%d candles from last_processed=%d to now=%d",
+        recovered_count, int(last_processed_raw), now_ms
+    )
+    
+    return recovered_count
+
+
+def send_pending_notifications(
+    db: Database,
+    notifier: TelegramNotifier,
+    dispatcher: TelegramDispatcher,
+    settings,
+) -> int:
+    """Send any pending trade notifications that weren't sent due to crashes.
+    
+    Returns:
+        Number of notifications sent
+    """
+    unsent = db.get_unsent_trade_notifications()
+    
+    if not unsent:
+        return 0
+    
+    _log.info("Found %d unsent trade notifications, sending now", len(unsent))
+    
+    sent_count = 0
+    for trade in unsent:
+        try:
+            # Check if already sent via dispatcher (legacy check)
+            if dispatcher.should_send_trade(trade["trade_id"]):
+                # Send notification
+                from src.models import TradeResult
+                
+                result = TradeResult(
+                    executed=True,
+                    trade_id=trade["trade_id"],
+                    side=trade["side"],
+                    qty_btc=float(trade["qty_btc"]),
+                    price_market=float(trade["price_market"]),
+                    price_exec=float(trade["price_exec"]),
+                    fee=float(trade["fee"]),
+                    pnl_realized=float(trade["pnl_realized"]),
+                    reason=trade.get("reason", ""),
+                )
+                
+                notifier.notify_trade(
+                    result,
+                    market_price=float(trade["price_market"]),
+                    cash=float(trade["cash_after"]),
+                    btc_qty=float(trade["btc_after"]),
+                    slippage_rate=settings.slippage_rate,
+                )
+                
+                dispatcher.mark_trade_sent(trade["trade_id"])
+            
+            # Mark as sent in database
+            db.mark_trade_notification_sent(trade["trade_id"], int(time.time() * 1000))
+            sent_count += 1
+            
+            _log.info("Sent pending notification for trade_id=%s", trade["trade_id"])
+            
+        except Exception as exc:
+            _log.error("Failed to send pending notification for trade %s: %s", trade["trade_id"], exc)
+    
+    return sent_count
+
+
+def purge_old_notifications(db: Database) -> int:
+    """Purge notification records older than 30 days.
+    
+    Returns:
+        Number of records deleted
+    """
+    # 30 days in milliseconds
+    cutoff_ts = int((time.time() - 30 * 86400) * 1000)
+    deleted = db.purge_old_sent_notifications(cutoff_ts)
+    
+    if deleted > 0:
+        _log.info("Purged %d old notification records (older than 30 days)", deleted)
+    
+    return deleted
 
 
 def _maybe_send_daily_report(
@@ -195,6 +420,16 @@ def main() -> None:
 
     db = Database(settings.db_path)
     db.init_schema(_schema_path())
+    
+    # Run migrations
+    migration_dir = Path(__file__).resolve().parent.parent / "migrations"
+    if migration_dir.exists():
+        for migration_file in sorted(migration_dir.glob("*.sql")):
+            _log.info("Running migration: %s", migration_file.name)
+            try:
+                db.run_migration(migration_file)
+            except Exception as exc:
+                _log.warning("Migration %s failed or already applied: %s", migration_file.name, exc)
 
     strategy = MovingAverageCrossStrategy(fast_period=settings.ma_fast, slow_period=settings.ma_slow)
     broker = PaperBroker(settings=settings, db=db)
@@ -207,6 +442,19 @@ def main() -> None:
     dispatcher = TelegramDispatcher(db=db, tz_name=settings.report_tz)
 
     _log.info("Live paper trading started for %s %s", settings.symbol, settings.timeframe)
+    
+    # Purge old notification records (older than 30 days)
+    purge_old_notifications(db)
+    
+    # Send any pending notifications from previous crashes
+    sent = send_pending_notifications(db, notifier, dispatcher, settings)
+    if sent > 0:
+        _log.info("Sent %d pending notifications from previous session", sent)
+    
+    # Recover missing candles if there's a gap
+    recovered = recover_missing_candles(db, broker, strategy, notifier, dispatcher, settings)
+    if recovered > 0:
+        _log.info("Recovered %d missing candles", recovered)
     
     # Check if we should send startup notification
     if dispatcher.should_send_startup():
