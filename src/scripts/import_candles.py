@@ -106,7 +106,7 @@ def main() -> None:
 
     settings = load_settings()
     schema_path = Path(__file__).resolve().parent.parent / "storage" / "schema.sql"
-    db = Database(settings.db_path)
+    db = Database()
     db.init_schema(schema_path)
 
     if args.csv:

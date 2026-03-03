@@ -1,6 +1,7 @@
 """Tests du module analytics: daily_report et metrics."""
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from datetime import date
@@ -81,9 +82,13 @@ class RenderDailyReportTest(unittest.TestCase):
 
 class BuildDailyReportTest(unittest.TestCase):
     def setUp(self) -> None:
+        dsn = os.getenv("TEST_POSTGRES_DSN") or os.getenv("POSTGRES_DSN")
+        if not dsn:
+            self.skipTest("TEST_POSTGRES_DSN or POSTGRES_DSN is required for PostgreSQL tests")
+        os.environ["POSTGRES_DSN"] = dsn
+
         self.tmp = tempfile.TemporaryDirectory()
-        db_path = Path(self.tmp.name) / "test.db"
-        self.db = Database(db_path)
+        self.db = Database()
         self.db.init_schema(Path("src/storage/schema.sql"))
 
     def tearDown(self) -> None:

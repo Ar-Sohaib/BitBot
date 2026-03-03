@@ -210,7 +210,7 @@ Statut: `WARN`"""
     # Legacy methods — delegated to format functions for backward compatibility
     # ============================================================================
 
-    def notify_trade(self, trade: TradeResult, market_price: float, cash: float, btc_qty: float, slippage_rate: float = 0.0002) -> None:
+    def notify_trade(self, trade: TradeResult, market_price: float, cash: float, btc_qty: float, slippage_rate: float = 0.0002, symbol: str | None = None) -> None:
         """Notify about a buy or sell trade."""
         if not trade.executed or trade.side is None:
             return
@@ -220,16 +220,20 @@ Statut: `WARN`"""
         fee = trade.fee
         equity = cash + (btc_qty * market_price)
         reason = trade.reason or "Signal MA"
-        symbol = trade.symbol or "BTCUSDT"
+        # Prefer explicit symbol argument, otherwise fall back to attribute if present, then a safe default
+        if symbol:
+            symbol_val = symbol
+        else:
+            symbol_val = getattr(trade, "symbol", None) or "BTCUSDT"
         
         if trade.side.upper() == "BUY":
             text = self.format_trade_buy(
-                symbol, market_price, exec_price, qty, fee,
+                symbol_val, market_price, exec_price, qty, fee,
                 cash, btc_qty, equity, reason
             )
         else:
             text = self.format_trade_sell(
-                symbol, market_price, exec_price, qty, fee,
+                symbol_val, market_price, exec_price, qty, fee,
                 cash, btc_qty, equity, reason=reason
             )
         

@@ -1,9 +1,9 @@
 """Tests avancés du broker: kill-switch, erreurs DB, edge cases."""
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
-from pathlib import Path
 
 from src.broker.paper_broker import PaperBroker
 from src.config import Settings
@@ -25,7 +25,6 @@ def _make_settings(**overrides) -> Settings:
         kill_switch_drawdown_pct=0.10,
         ma_fast=10,
         ma_slow=30,
-        db_path=Path("/tmp/test.db"),
         poll_seconds=15,
         price_source="binance",
         telegram_enable=False,
@@ -53,14 +52,17 @@ def _candle(open_time: int, close: float) -> Candle:
 
 class KillSwitchTest(unittest.TestCase):
     def setUp(self) -> None:
+        dsn = os.getenv("TEST_POSTGRES_DSN") or os.getenv("POSTGRES_DSN")
+        if not dsn:
+            self.skipTest("TEST_POSTGRES_DSN or POSTGRES_DSN is required for PostgreSQL tests")
+        os.environ["POSTGRES_DSN"] = dsn
+
         self.tmp = tempfile.TemporaryDirectory()
-        db_path = Path(self.tmp.name) / "test.db"
         self.settings = _make_settings(
-            db_path=db_path,
             kill_switch_drawdown_pct=0.10,
             max_position_pct=0.95,
         )
-        self.db = Database(db_path)
+        self.db = Database()
         self.db.init_schema(Path("src/storage/schema.sql"))
         self.broker = PaperBroker(self.settings, self.db)
 
@@ -96,10 +98,14 @@ class KillSwitchTest(unittest.TestCase):
 
 class EdgeCasesTest(unittest.TestCase):
     def setUp(self) -> None:
+        dsn = os.getenv("TEST_POSTGRES_DSN") or os.getenv("POSTGRES_DSN")
+        if not dsn:
+            self.skipTest("TEST_POSTGRES_DSN or POSTGRES_DSN is required for PostgreSQL tests")
+        os.environ["POSTGRES_DSN"] = dsn
+
         self.tmp = tempfile.TemporaryDirectory()
-        db_path = Path(self.tmp.name) / "test.db"
-        self.settings = _make_settings(db_path=db_path)
-        self.db = Database(db_path)
+        self.settings = _make_settings()
+        self.db = Database()
         self.db.init_schema(Path("src/storage/schema.sql"))
         self.broker = PaperBroker(self.settings, self.db)
 

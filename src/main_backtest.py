@@ -25,7 +25,7 @@ def main() -> None:
     settings = load_settings()
     _configure_logging(settings.log_level)
 
-    db = Database(settings.db_path)
+    db = Database()
     db.init_schema(Path("src/storage/schema.sql"))
 
     strategy = MovingAverageCrossStrategy(fast_period=settings.ma_fast, slow_period=settings.ma_slow)

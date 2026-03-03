@@ -5,21 +5,18 @@ Shows how messages look with Paris timezone and readable timestamps.
 """
 
 from datetime import date
+import os
 from src.models import DailyReport, TradeResult
 from src.notify.telegram import TelegramNotifier
 
 
 def test_all_notifications():
-    # Load settings from .env
-    from src.config import load_settings
-    settings = load_settings()
-    
     # Create notifier with Telegram config
     notifier = TelegramNotifier(
-        enabled=settings.telegram_enable,
-        bot_token=settings.telegram_bot_token,
-        chat_id=settings.telegram_chat_id,
-        tz_name=settings.report_tz,
+        enabled=os.getenv("TELEGRAM_ENABLE", "false").strip().lower() in {"1", "true", "yes", "on"},
+        bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
+        chat_id=os.getenv("TELEGRAM_CHAT_ID", ""),
+        tz_name=os.getenv("REPORT_TZ", "Europe/Paris"),
     )
     
     if not notifier.enabled:

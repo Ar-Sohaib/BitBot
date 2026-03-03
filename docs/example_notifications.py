@@ -11,17 +11,13 @@ from src.notify.dispatcher import TelegramDispatcher
 
 def example_usage():
     """Exemple d'intégration du dispatcher dans main_live.py."""
-    
+
     # Initialisation
     from pathlib import Path
-    import tempfile
-    db_dir = Path(tempfile.gettempdir()) / "bitbot_test"
-    db_dir.mkdir(exist_ok=True)
-    db_file = db_dir / "test.db"
-    db = Database(db_file)  # Temporary SQLite for demo
+    db = Database()
     
     # Initialize schema
-    schema_path = Path(__file__).resolve().parent / "src" / "storage" / "schema.sql"
+    schema_path = Path(__file__).resolve().parent.parent / "src" / "storage" / "schema.sql"
     db.init_schema(schema_path)
     notifier = TelegramNotifier(
         enabled=True,

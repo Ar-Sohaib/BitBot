@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
@@ -11,132 +10,83 @@ from src.models import Candle, Signal, WalletState
 
 
 class Database:
-    """Wrapper Database supporting SQLite (default) and PostgreSQL (if DB_TYPE=postgres).
+    """PostgreSQL-only database wrapper.
 
-    Behaviour:
-    - Choose backend via env `DB_TYPE` (sqlite or postgres).
-    - For Postgres, provide `POSTGRES_DSN` env var (psycopg2 DSN).
-    - Methods expose a similar API so callers don't need to change.
+    `POSTGRES_DSN` must be set in environment.
     """
 
-    def __init__(self, db_path: Path):
-        self.db_path = db_path
-        self._db_type = os.getenv("DB_TYPE", "sqlite").lower()
-        self._pg = self._db_type in {"postgres", "postgresql", "pg"}
+    def __init__(self):
+        try:
+            import psycopg2
+            import psycopg2.extras
+        except Exception as exc:  # pragma: no cover - runtime dependency
+            raise RuntimeError("psycopg2 is required for Postgres support") from exc
 
-        if self._pg:
-            try:
-                import psycopg2
-                import psycopg2.extras
-            except Exception as exc:  # pragma: no cover - runtime dependency
-                raise RuntimeError("psycopg2 is required for Postgres support") from exc
+        dsn = os.getenv("POSTGRES_DSN", "")
+        if not dsn:
+            raise RuntimeError("POSTGRES_DSN must be set")
 
-            dsn = os.getenv("POSTGRES_DSN", "")
-            if not dsn:
-                raise RuntimeError("POSTGRES_DSN must be set for Postgres DB_TYPE")
-
-            self.conn = psycopg2.connect(dsn)
-            self.conn.autocommit = False
-            self._pg_extras = psycopg2.extras
-        else:
-            # ensure parent dir exists for sqlite file
-            self.db_path.parent.mkdir(parents=True, exist_ok=True)
-            self.conn = sqlite3.connect(self.db_path)
-            self.conn.row_factory = sqlite3.Row
-            self.conn.execute("PRAGMA journal_mode=WAL;")
-            self.conn.execute("PRAGMA foreign_keys=ON;")
+        self.conn = psycopg2.connect(dsn)
+        self.conn.autocommit = False
+        self._pg_extras = psycopg2.extras
 
     def close(self) -> None:
         self.conn.close()
 
     def init_schema(self, schema_path: Path) -> None:
         sql = schema_path.read_text(encoding="utf-8")
-        if self._pg:
-            # Split on semicolon and execute statements individually for psycopg2
-            cur = self.conn.cursor()
-            for stmt in [s.strip() for s in sql.split(";") if s.strip()]:
-                cur.execute(stmt)
+        # Split on semicolon and execute statements individually for psycopg2
+        cur = self.conn.cursor()
+        for stmt in [s.strip() for s in sql.split(";") if s.strip()]:
+            cur.execute(stmt)
             self.conn.commit()
-            cur.close()
-        else:
-            self.conn.executescript(sql)
-            self.conn.commit()
+        cur.close()
 
     def _translate_sql(self, sql: str) -> str:
-        if not self._pg:
-            return sql
         # adapt parameter style
         return sql.replace("?", "%s")
 
     def _execute(self, sql: str, params: tuple | list = (), commit: bool = True):
-        if self._pg:
-            cur = self.conn.cursor(cursor_factory=self._pg_extras.RealDictCursor)
-            cur.execute(self._translate_sql(sql), params)
-            if commit:
-                self.conn.commit()
-            return cur
-        else:
-            cur = self.conn.execute(sql, params)
-            if commit:
-                self.conn.commit()
-            return cur
+        cur = self.conn.cursor(cursor_factory=self._pg_extras.RealDictCursor)
+        cur.execute(self._translate_sql(sql), params)
+        if commit:
+            self.conn.commit()
+        return cur
 
     @contextmanager
     def transaction(self) -> Iterator[object]:
-        if self._pg:
-            cur = self.conn.cursor()
-            try:
-                cur.execute("BEGIN;")
+        cur = self.conn.cursor()
+        try:
+            cur.execute("BEGIN;")
 
-                class _Tx:
-                    def __init__(self, cur, translate):
-                        self._cur = cur
-                        self._translate = translate
+            class _Tx:
+                def __init__(self, cur, translate):
+                    self._cur = cur
+                    self._translate = translate
 
-                    def execute(self, sql, params=()):
-                        return self._cur.execute(self._translate(sql), params)
+                def execute(self, sql, params=()):
+                    return self._cur.execute(self._translate(sql), params)
 
-                tx = _Tx(cur, self._translate_sql)
-                yield tx
-                self.conn.commit()
-            except Exception:
-                self.conn.rollback()
-                raise
-            finally:
-                cur.close()
-        else:
-            try:
-                self.conn.execute("BEGIN IMMEDIATE")
-                yield self.conn
-                self.conn.commit()
-            except Exception:
-                self.conn.rollback()
-                raise
+            tx = _Tx(cur, self._translate_sql)
+            yield tx
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+        finally:
+            cur.close()
 
     def set_bot_state(self, key: str, value: str) -> None:
-        if self._pg:
-            sql = """
-            INSERT INTO bot_state(key, value) VALUES(%s, %s)
-            ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value
-            """
-            self._execute(sql, (key, value))
-        else:
-            self._execute(
-                """
-                INSERT INTO bot_state(key, value) VALUES(?, ?)
-                ON CONFLICT(key) DO UPDATE SET value=excluded.value
-                """,
-                (key, value),
-            )
+        sql = """
+        INSERT INTO bot_state(key, value) VALUES(%s, %s)
+        ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value
+        """
+        self._execute(sql, (key, value))
 
     def get_bot_state(self, key: str) -> str | None:
-        if self._pg:
-            cur = self._execute("SELECT value FROM bot_state WHERE key=%s", (key,), commit=False)
-            row = cur.fetchone()
-            return None if row is None else str(row["value"])
-        else:
-            row = self._execute("SELECT value FROM bot_state WHERE key=?", (key,), commit=False).fetchone()
-            return None if row is None else str(row["value"])
+        cur = self._execute("SELECT value FROM bot_state WHERE key=%s", (key,), commit=False)
+        row = cur.fetchone()
+        return None if row is None else str(row["value"])
 
     def save_wallet_state(self, wallet: WalletState) -> None:
         payload = {
@@ -164,255 +114,127 @@ class Database:
         )
 
     def insert_candle(self, candle: Candle) -> bool:
-        if self._pg:
-            sql = """
-            INSERT INTO candles(symbol, timeframe, open_time, open, high, low, close, volume, close_time)
-            VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (symbol, timeframe, open_time) DO NOTHING
-            """
-            cur = self._execute(sql, (
-                candle.symbol,
-                candle.timeframe,
-                candle.open_time,
-                candle.open,
-                candle.high,
-                candle.low,
-                candle.close,
-                candle.volume,
-                candle.close_time,
-            ))
-            return cur.rowcount > 0
-        else:
-            cur = self._execute(
-                """
-                INSERT OR IGNORE INTO candles(symbol, timeframe, open_time, open, high, low, close, volume, close_time)
-                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    candle.symbol,
-                    candle.timeframe,
-                    candle.open_time,
-                    candle.open,
-                    candle.high,
-                    candle.low,
-                    candle.close,
-                    candle.volume,
-                    candle.close_time,
-                ),
-            )
-            return cur.rowcount > 0
+        sql = """
+        INSERT INTO candles(symbol, timeframe, open_time, open, high, low, close, volume, close_time)
+        VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (symbol, timeframe, open_time) DO NOTHING
+        """
+        cur = self._execute(sql, (
+            candle.symbol,
+            candle.timeframe,
+            candle.open_time,
+            candle.open,
+            candle.high,
+            candle.low,
+            candle.close,
+            candle.volume,
+            candle.close_time,
+        ))
+        return cur.rowcount > 0
 
     def insert_signal(self, signal: Signal) -> bool:
-        if self._pg:
-            sql = """
-            INSERT INTO signals(ts, symbol, timeframe, signal, reason, features_json)
-            VALUES(%s, %s, %s, %s, %s, %s)
-            ON CONFLICT (symbol, timeframe, ts) DO NOTHING
-            """
-            cur = self._execute(sql, (signal.ts, signal.symbol, signal.timeframe, signal.signal, signal.reason, signal.features_json))
-            return cur.rowcount > 0
-        else:
-            cur = self._execute(
-                """
-                INSERT OR IGNORE INTO signals(ts, symbol, timeframe, signal, reason, features_json)
-                VALUES(?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    signal.ts,
-                    signal.symbol,
-                    signal.timeframe,
-                    signal.signal,
-                    signal.reason,
-                    signal.features_json,
-                ),
-            )
-            return cur.rowcount > 0
+        sql = """
+        INSERT INTO signals(ts, symbol, timeframe, signal, reason, features_json)
+        VALUES(%s, %s, %s, %s, %s, %s)
+        ON CONFLICT (symbol, timeframe, ts) DO NOTHING
+        """
+        cur = self._execute(sql, (signal.ts, signal.symbol, signal.timeframe, signal.signal, signal.reason, signal.features_json))
+        return cur.rowcount > 0
 
     def get_recent_closes(self, symbol: str, timeframe: str, limit: int) -> list[float]:
-        if self._pg:
-            cur = self._execute(
-                """
-                SELECT close
-                FROM candles
-                WHERE symbol=%s AND timeframe=%s
-                ORDER BY open_time DESC
-                LIMIT %s
-                """,
-                (symbol, timeframe, limit),
-                commit=False,
-            )
-            rows = cur.fetchall()
-            return [float(r["close"]) for r in reversed(rows)]
-        else:
-            rows = self._execute(
-                """
-                SELECT close
-                FROM candles
-                WHERE symbol=? AND timeframe=?
-                ORDER BY open_time DESC
-                LIMIT ?
-                """,
-                (symbol, timeframe, limit),
-                commit=False,
-            ).fetchall()
-            return [float(r["close"]) for r in reversed(rows)]
+        cur = self._execute(
+            """
+            SELECT close
+            FROM candles
+            WHERE symbol=%s AND timeframe=%s
+            ORDER BY open_time DESC
+            LIMIT %s
+            """,
+            (symbol, timeframe, limit),
+            commit=False,
+        )
+        rows = cur.fetchall()
+        return [float(r["close"]) for r in reversed(rows)]
 
     def get_latest_open_time(self, symbol: str, timeframe: str) -> int | None:
-        if self._pg:
-            cur = self._execute(
-                """
-                SELECT MAX(open_time) AS open_time
-                FROM candles
-                WHERE symbol=%s AND timeframe=%s
-                """,
-                (symbol, timeframe),
-                commit=False,
-            )
-            row = cur.fetchone()
-            if row is None or row.get("open_time") is None:
-                return None
-            return int(row["open_time"])
-        else:
-            row = self._execute(
-                """
-                SELECT MAX(open_time) AS open_time
-                FROM candles
-                WHERE symbol=? AND timeframe=?
-                """,
-                (symbol, timeframe),
-                commit=False,
-            ).fetchone()
-            if row is None or row["open_time"] is None:
-                return None
-            return int(row["open_time"])
+        cur = self._execute(
+            """
+            SELECT MAX(open_time) AS open_time
+            FROM candles
+            WHERE symbol=%s AND timeframe=%s
+            """,
+            (symbol, timeframe),
+            commit=False,
+        )
+        row = cur.fetchone()
+        if row is None or row.get("open_time") is None:
+            return None
+        return int(row["open_time"])
 
     def trade_exists_for_candle(self, symbol: str, timeframe: str, source_open_time: int) -> bool:
-        if self._pg:
-            row = self._execute(
-                """
-                SELECT 1
-                FROM trades
-                WHERE symbol=%s AND timeframe=%s AND source_open_time=%s
-                LIMIT 1
-                """,
-                (symbol, timeframe, source_open_time),
-                commit=False,
-            ).fetchone()
-            return row is not None
-        else:
-            row = self._execute(
-                """
-                SELECT 1
-                FROM trades
-                WHERE symbol=? AND timeframe=? AND source_open_time=?
-                LIMIT 1
-                """,
-                (symbol, timeframe, source_open_time),
-                commit=False,
-            ).fetchone()
-            return row is not None
+        row = self._execute(
+            """
+            SELECT 1
+            FROM trades
+            WHERE symbol=%s AND timeframe=%s AND source_open_time=%s
+            LIMIT 1
+            """,
+            (symbol, timeframe, source_open_time),
+            commit=False,
+        ).fetchone()
+        return row is not None
 
     def insert_trade(self, payload: dict) -> None:
-        if self._pg:
-            sql = """
-            INSERT INTO trades(
-                trade_id, ts, side, symbol, timeframe, source_open_time, qty_btc,
-                price_market, price_exec, fee, cash_after, btc_after, pnl_realized, reason, meta_json
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """
-            self._execute(
-                sql,
-                (
-                    payload["trade_id"],
-                    payload["ts"],
-                    payload["side"],
-                    payload["symbol"],
-                    payload["timeframe"],
-                    payload["source_open_time"],
-                    payload["qty_btc"],
-                    payload["price_market"],
-                    payload["price_exec"],
-                    payload["fee"],
-                    payload["cash_after"],
-                    payload["btc_after"],
-                    payload["pnl_realized"],
-                    payload.get("reason", ""),
-                    payload.get("meta_json", ""),
-                ),
-                commit=False,
-            )
-        else:
-            self._execute(
-                """
-                INSERT INTO trades(
-                    trade_id, ts, side, symbol, timeframe, source_open_time, qty_btc,
-                    price_market, price_exec, fee, cash_after, btc_after, pnl_realized, reason, meta_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    payload["trade_id"],
-                    payload["ts"],
-                    payload["side"],
-                    payload["symbol"],
-                    payload["timeframe"],
-                    payload["source_open_time"],
-                    payload["qty_btc"],
-                    payload["price_market"],
-                    payload["price_exec"],
-                    payload["fee"],
-                    payload["cash_after"],
-                    payload["btc_after"],
-                    payload["pnl_realized"],
-                    payload.get("reason", ""),
-                    payload.get("meta_json", ""),
-                ),
-                commit=False,
-            )
+        sql = """
+        INSERT INTO trades(
+            trade_id, ts, side, symbol, timeframe, source_open_time, qty_btc,
+            price_market, price_exec, fee, cash_after, btc_after, pnl_realized, reason, meta_json
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """
+        self._execute(
+            sql,
+            (
+                payload["trade_id"],
+                payload["ts"],
+                payload["side"],
+                payload["symbol"],
+                payload["timeframe"],
+                payload["source_open_time"],
+                payload["qty_btc"],
+                payload["price_market"],
+                payload["price_exec"],
+                payload["fee"],
+                payload["cash_after"],
+                payload["btc_after"],
+                payload["pnl_realized"],
+                payload.get("reason", ""),
+                payload.get("meta_json", ""),
+            ),
+            commit=False,
+        )
 
     def insert_equity(self, ts: int, cash: float, btc_qty: float, btc_price: float, equity: float, drawdown: float) -> None:
-        if self._pg:
-            self._execute(
-                """
-                INSERT INTO equity(ts, cash, btc_qty, btc_price, equity, drawdown)
-                VALUES (%s, %s, %s, %s, %s, %s)
-                """,
-                (ts, cash, btc_qty, btc_price, equity, drawdown),
-                commit=False,
-            )
-        else:
-            self._execute(
-                """
-                INSERT INTO equity(ts, cash, btc_qty, btc_price, equity, drawdown)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (ts, cash, btc_qty, btc_price, equity, drawdown),
-                commit=False,
-            )
+        self._execute(
+            """
+            INSERT INTO equity(ts, cash, btc_qty, btc_price, equity, drawdown)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            """,
+            (ts, cash, btc_qty, btc_price, equity, drawdown),
+            commit=False,
+        )
 
     def get_candles_between(self, symbol: str, timeframe: str, start_open_time: int, end_open_time: int) -> list[Candle]:
-        if self._pg:
-            cur = self._execute(
-                """
-                SELECT symbol, timeframe, open_time, open, high, low, close, volume, close_time
-                FROM candles
-                WHERE symbol=%s AND timeframe=%s AND open_time BETWEEN %s AND %s
-                ORDER BY open_time ASC
-                """,
-                (symbol, timeframe, start_open_time, end_open_time),
-                commit=False,
-            )
-            rows = cur.fetchall()
-        else:
-            rows = self._execute(
-                """
-                SELECT symbol, timeframe, open_time, open, high, low, close, volume, close_time
-                FROM candles
-                WHERE symbol=? AND timeframe=? AND open_time BETWEEN ? AND ?
-                ORDER BY open_time ASC
-                """,
-                (symbol, timeframe, start_open_time, end_open_time),
-                commit=False,
-            ).fetchall()
+        cur = self._execute(
+            """
+            SELECT symbol, timeframe, open_time, open, high, low, close, volume, close_time
+            FROM candles
+            WHERE symbol=%s AND timeframe=%s AND open_time BETWEEN %s AND %s
+            ORDER BY open_time ASC
+            """,
+            (symbol, timeframe, start_open_time, end_open_time),
+            commit=False,
+        )
+        rows = cur.fetchall()
         return [
             Candle(
                 symbol=str(r["symbol"]),
@@ -429,51 +251,27 @@ class Database:
         ]
 
     def get_equity_between(self, start_ts: int, end_ts: int) -> list[dict]:
-        if self._pg:
-            cur = self._execute(
-                """
-                SELECT ts, cash, btc_qty, btc_price, equity, drawdown
-                FROM equity
-                WHERE ts BETWEEN %s AND %s
-                ORDER BY ts ASC
-                """,
-                (start_ts, end_ts),
-                commit=False,
-            )
-            return cur.fetchall()
-        else:
-            return self._execute(
-                """
-                SELECT ts, cash, btc_qty, btc_price, equity, drawdown
-                FROM equity
-                WHERE ts BETWEEN ? AND ?
-                ORDER BY ts ASC
-                """,
-                (start_ts, end_ts),
-                commit=False,
-            ).fetchall()
+        cur = self._execute(
+            """
+            SELECT ts, cash, btc_qty, btc_price, equity, drawdown
+            FROM equity
+            WHERE ts BETWEEN %s AND %s
+            ORDER BY ts ASC
+            """,
+            (start_ts, end_ts),
+            commit=False,
+        )
+        return cur.fetchall()
 
     def get_trades_between(self, start_ts: int, end_ts: int) -> list[dict]:
-        if self._pg:
-            cur = self._execute(
-                """
-                SELECT *
-                FROM trades
-                WHERE ts BETWEEN %s AND %s
-                ORDER BY ts ASC
-                """,
-                (start_ts, end_ts),
-                commit=False,
-            )
-            return cur.fetchall()
-        else:
-            return self._execute(
-                """
-                SELECT *
-                FROM trades
-                WHERE ts BETWEEN ? AND ?
-                ORDER BY ts ASC
-                """,
-                (start_ts, end_ts),
-                commit=False,
-            ).fetchall()
+        cur = self._execute(
+            """
+            SELECT *
+            FROM trades
+            WHERE ts BETWEEN %s AND %s
+            ORDER BY ts ASC
+            """,
+            (start_ts, end_ts),
+            commit=False,
+        )
+        return cur.fetchall()

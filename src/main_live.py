@@ -47,23 +47,23 @@ def process_once(
 
     try:
         candles = provider.fetch_klines(settings.symbol, settings.timeframe, limit=max(120, settings.ma_slow + 20))
-        
+
         # Check if feed was down and is now recovered
         if dispatcher.should_send_feed_ok():
             downtime = dispatcher.get_feed_downtime_seconds()
             text = notifier.format_feed_ok("Binance REST", downtime)
             notifier.send_message(text)
             dispatcher.mark_feed_ok()
-            
+
     except Exception as exc:
         _log.error("Feed error: %s", exc)
-        
+
         # Check if we should send feed down alert
         if dispatcher.should_send_feed_down():
             text = notifier.format_feed_down("Binance REST", str(exc), 1, 1.5, False)
             notifier.send_message(text)
             dispatcher.mark_feed_down()
-        
+
         return 0
 
     closed = filter_closed_candles(candles)
@@ -129,6 +129,7 @@ def process_once(
                     cash=state_after.cash,
                     btc_qty=state_after.btc_qty,
                     slippage_rate=settings.slippage_rate,
+                    symbol=settings.symbol,
                 )
                 dispatcher.mark_trade_sent(result.trade_id)
 
@@ -185,7 +186,7 @@ def _maybe_send_daily_report(
             )
             notifier.notify_daily_report(report)
             dispatcher.mark_daily_report_sent(current_local_day)
-        
+
         db.set_bot_state("last_report_marker", current_local_day)
 
 
@@ -193,7 +194,7 @@ def main() -> None:
     settings = load_settings()
     _configure_logging(settings.log_level)
 
-    db = Database(settings.db_path)
+    db = Database()
     db.init_schema(_schema_path())
 
     strategy = MovingAverageCrossStrategy(fast_period=settings.ma_fast, slow_period=settings.ma_slow)
@@ -207,7 +208,7 @@ def main() -> None:
     dispatcher = TelegramDispatcher(db=db, tz_name=settings.report_tz)
 
     _log.info("Live paper trading started for %s %s", settings.symbol, settings.timeframe)
-    
+
     # Check if we should send startup notification
     if dispatcher.should_send_startup():
         text = notifier.format_startup(settings.symbol, settings.timeframe, "Binance REST")

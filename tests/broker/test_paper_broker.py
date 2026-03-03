@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
-from pathlib import Path
 
 from src.broker.paper_broker import PaperBroker
 from src.config import Settings
@@ -12,8 +12,12 @@ from src.storage.db import Database
 
 class PaperBrokerTest(unittest.TestCase):
     def setUp(self) -> None:
+        dsn = os.getenv("TEST_POSTGRES_DSN") or os.getenv("POSTGRES_DSN")
+        if not dsn:
+            self.skipTest("TEST_POSTGRES_DSN or POSTGRES_DSN is required for PostgreSQL tests")
+        os.environ["POSTGRES_DSN"] = dsn
+
         self.tmp = tempfile.TemporaryDirectory()
-        db_path = Path(self.tmp.name) / "test.db"
         self.settings = Settings(
             app_env="test",
             log_level="INFO",
@@ -27,7 +31,6 @@ class PaperBrokerTest(unittest.TestCase):
             kill_switch_drawdown_pct=0.5,
             ma_fast=10,
             ma_slow=30,
-            db_path=db_path,
             poll_seconds=15,
             price_source="binance",
             telegram_enable=False,
@@ -35,7 +38,7 @@ class PaperBrokerTest(unittest.TestCase):
             telegram_chat_id="",
             report_tz="Europe/Paris",
         )
-        self.db = Database(db_path)
+        self.db = Database()
         self.db.init_schema(Path("src/storage/schema.sql"))
         self.broker = PaperBroker(self.settings, self.db)
 

@@ -128,7 +128,7 @@ from src.notify.dispatcher import TelegramDispatcher
 **🟢 PAPER BOT — DÉMARRÉ**
 `BTCUSDT • 1m • Europe/Paris`
 ⏱️ `00:32:48 | 2026-03-03`
-Mode: `LIVE` | Source: `Binance REST` | Version: `1.0.0` | DB: `paper.db`
+Mode: `LIVE` | Source: `Binance REST` | Version: `1.0.0` | DB: `postgres`
 ```
 
 ### 2. ✅ BUY

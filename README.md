@@ -1,6 +1,6 @@
 # Paper BTC Bot (MVP)
 
-Implémentation du projet décrit dans `project.md` : paper trading BTC autonome, feed public, stratégie MA cross, broker simulé (fees + slippage), SQLite, notifications Telegram, reporting journalier.
+Implémentation du projet décrit dans `project.md` : paper trading BTC autonome, feed public, stratégie MA cross, broker simulé (fees + slippage), PostgreSQL, notifications Telegram, reporting journalier.
 
 ## Structure
 
@@ -19,7 +19,7 @@ src/
     paper_broker.py      # Exécution paper + risque/idempotence
     risk.py              # Calculs equity/drawdown
   storage/
-    db.py                # Persistence SQLite
+    db.py                # Persistence PostgreSQL
     schema.sql           # Schéma DB
   analytics/
     metrics.py           # Winrate, max DD
@@ -47,6 +47,7 @@ source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
 # Éditer .env avec vos paramètres
+# Obligatoire : POSTGRES_DSN=postgresql://user:pass@host:5432/dbname
 python -m src.scripts.init_db
 ```
 
@@ -89,7 +90,7 @@ sudo systemctl status paper-btc-bot
 sudo journalctl -u paper-btc-bot -f
 ```
 
-Le script crée un user dédié `paperbot`, installe le venv, initialise la DB, et active le service systemd avec redémarrage automatique.
+Le script crée un user dédié `paperbot`, installe le venv, initialise le schéma PostgreSQL, et active le service systemd avec redémarrage automatique.
 
 ## Notes
 

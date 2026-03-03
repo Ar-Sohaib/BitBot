@@ -160,7 +160,7 @@ RATE_LIMITS = {
 
 ## 💾 État Persisté
 
-Clés stockées dans la table `bot_state` (SQLite) :
+Clés stockées dans la table `bot_state` (PostgreSQL) :
 
 | Clé | Type | TTL | Rôle |
 |-----|------|-----|------|

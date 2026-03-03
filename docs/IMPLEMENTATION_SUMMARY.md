@@ -92,7 +92,7 @@ Signal: MA10/MA30 crossover
 | KILL_SWITCH | Aucun (une fois par incident) | — |
 
 ### État Persisté
-Toutes les clés d'état sont stockées dans `bot_state` table (SQLite) :
+Toutes les clés d'état sont stockées dans la table `bot_state` (PostgreSQL) :
 ```sql
 CREATE TABLE bot_state (
     key TEXT PRIMARY KEY,
@@ -191,7 +191,7 @@ sudo journalctl -u paper-btc-bot -f
 **🟢 PAPER BOT — DÉMARRÉ**
 `BTCUSDT • 1m • Europe/Paris`
 ⏱️ `14:32:48 | 2026-03-03`
-Mode: `LIVE` | Source: `Binance REST` | Version: `1.0.0` | DB: `paper.db`
+Mode: `LIVE` | Source: `Binance REST` | Version: `1.0.0` | DB: `postgres`
 ```
 
 ### ✅ Trade Sell (avec PnL)

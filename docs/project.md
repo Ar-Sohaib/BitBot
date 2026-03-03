@@ -9,7 +9,7 @@ Un système autonome sur ton VPS qui :
 5. Logge tout (candles, signaux, trades, equity).
 6. Envoie des **notifications Telegram** (mouvements + rapport journalier portefeuille/trades).
 
-Le projet est volontairement modulaire : tu peux changer la source de prix, la stratégie, la base (SQLite → Postgres), ou ajouter du WebSocket plus tard.
+Le projet est volontairement modulaire : tu peux changer la source de prix, la stratégie, la base (PostgreSQL), ou ajouter du WebSocket plus tard.
 
 ---
 
@@ -43,7 +43,7 @@ Le projet est volontairement modulaire : tu peux changer la source de prix, la s
    - Met à jour le wallet (cash, btc_qty, avg_entry).
    - Calcule PnL réalisé/latent, equity, drawdown.
 4. **storage**
-   - SQLite : schéma + fonctions insert/select.
+  - PostgreSQL : schéma + fonctions insert/select.
 5. **analytics/reporting**
    - Calcule métriques journalières (PnL, nb trades, winrate, max DD, fees).
    - Construit un rapport texte (Telegram).
@@ -58,7 +58,7 @@ Le projet est volontairement modulaire : tu peux changer la source de prix, la s
 
 ## 3) Choix techniques (recommandation)
 - Python 3.11+
-- SQLite (MVP)
+- PostgreSQL
 - `requests` (REST)
 - `pandas` (optionnel, pratique pour indicateurs)
 - `python-dotenv` (optionnel) pour `.env`
@@ -80,7 +80,7 @@ Tu n’utilises aucune plateforme de paper trading. Tu utilises **une source de 
 
 ---
 
-## 5) Base de données (SQLite) — schéma minimal
+## 5) Base de données (PostgreSQL) — schéma minimal
 ### Table `candles`
 - symbol (TEXT) ex: BTCUSDT
 - timeframe (TEXT) ex: 1m
@@ -194,7 +194,7 @@ Séquence d'exécution (BUY)
 5. Commit ; logs structurés ; émettre événement pour `notifier_telegram.notify_trade()`.
 
 Persistance & transactions
-- Grouper insert/update liés à un trade dans une transaction ACID (BEGIN/COMMIT). En SQLite : gérer `database is locked` via retry/backoff et privilégier single-writer ou verrou applicatif.
+- Grouper insert/update liés à un trade dans une transaction ACID (BEGIN/COMMIT) côté PostgreSQL.
 - Utiliser contraintes uniques (`trade_id`, ou `UNIQUE(symbol, timeframe, source_candle_open_time)`) pour empêcher doublons.
 - Marquer `bot_state['last_processed_open_time']` uniquement après commit réussi.
 
@@ -217,7 +217,7 @@ Observabilité & métriques
 
 Tests recommandés
 - Unitaires : `simulate_order` (fees/slippage/rounding), calculs PnL.
-- Intégration : execution end-to-end avec SQLite en mémoire ; vérifier INSERT/UPDATE et rollback.
+- Intégration : exécution end-to-end avec PostgreSQL ; vérifier INSERT/UPDATE et rollback.
 - Scénarios : tentative de double-exécution, DB locked, kill-switch déclenché.
 
 Fichiers recommandés (repo)
@@ -227,7 +227,7 @@ Fichiers recommandés (repo)
 - `tests/broker/` : tests unitaires & intégration.
 
 Points d'attention pratiques
-- Pour le MVP, garder le broker dans le même processus que le polling (évite concurrence SQLite). Si plus tard on distribue, prévoir migration vers Postgres ou mécanisme de verrou.
+- Pour le MVP, garder le broker dans le même processus que le polling. Si plus tard on distribue, prévoir mécanisme de verrou/queue.
 - Toujours lier `trade_id` à `source_candle_open_time` pour traçabilité.
 - Conserver le `reason` (journal de décision) lié au `trade`.
 - Prévoir `simulate_only=True` pour backtest / dry-run.
@@ -424,13 +424,13 @@ paper-btc-bot/
     notify/
       telegram.py
   data/
-    paper.db
+    README.md
   logs/
     app.log
 
 ---
 
 ## 15) Notes importantes (pragmatiques)
-- Même en paper, ton bot doit être parano : retries réseau, DB lock, idempotence sur candle.
+- Même en paper, ton bot doit être parano : retries réseau, erreurs DB, idempotence sur candle.
 - La meilleure “feature” au début : un **journal de décision** clair. Les stratégies viennent après.
 - Tout le projet tient sur VPS petit/moyen. Le vrai coût, c’est la discipline de logs + tests.

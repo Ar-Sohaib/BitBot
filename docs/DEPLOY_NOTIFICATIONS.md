@@ -118,12 +118,10 @@ Les clés suivantes sont stockées dans la base de données `bot_state` :
 **Nettoyer l'état** (reset tous les rate limits) :
 
 ```bash
-# Option 1 : Via SQLite CLI
-sudo sqlite3 /opt/paper-btc-bot/data/paper.db \
-    "DELETE FROM bot_state WHERE key LIKE 'last_%' OR key LIKE 'feed_%' OR key LIKE 'trade_notif_%';"
-
-# Option 2 : Supprimer la DB (recrée au démarrage)
-sudo rm /opt/paper-btc-bot/data/paper.db
+# Via PostgreSQL (adapter DSN)
+export POSTGRES_DSN='postgresql://user:pass@host:5432/bitbot'
+psql "$POSTGRES_DSN" \
+    -c "DELETE FROM bot_state WHERE key LIKE 'last_%' OR key LIKE 'feed_%' OR key LIKE 'trade_notif_%';"
 ```
 
 ## 🧪 Tests Locaux (avant déploiement)

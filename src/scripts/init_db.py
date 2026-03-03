@@ -1,4 +1,4 @@
-"""Initialise la base SQLite et crée les tables du schéma."""
+"""Initialise la base PostgreSQL et crée les tables du schéma."""
 from __future__ import annotations
 
 import logging
@@ -15,8 +15,8 @@ def main() -> None:
     settings = load_settings()
     schema_path = Path(__file__).resolve().parent.parent / "storage" / "schema.sql"
 
-    log.info("DB path: %s", settings.db_path)
-    db = Database(settings.db_path)
+    log.info("Applying schema to PostgreSQL database")
+    db = Database()
     db.init_schema(schema_path)
     log.info("Schema applied successfully.")
     db.close()

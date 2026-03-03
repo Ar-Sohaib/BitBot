@@ -68,7 +68,7 @@ Tu dois produire :
 `BTCUSDT • 1m • Europe/Paris`  
 ⏱️ `HH:MM:SS` — `YYYY-MM-DD`  
 Mode: `LIVE` | Source: `Binance REST`  
-DB: `paper.db` | Version: `vX.Y.Z`
+DB: `postgres` | Version: `vX.Y.Z`
 
 Champs requis :
 - symbol, timeframe, timezone
@@ -194,7 +194,7 @@ Règles :
 - TRADE : toujours (mais idempotent via trade_id)
 - DAILY_REPORT : 1 / jour
 
-### 6.2 État minimal à stocker (SQLite `bot_state`)
+### 6.2 État minimal à stocker (PostgreSQL `bot_state`)
 Clés proposées :
 - `last_start_notif_ts`
 - `feed_down_active` (0/1)

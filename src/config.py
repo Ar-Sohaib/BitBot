@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from pathlib import Path
 
-from dotenv import load_dotenv
+try:
+    from dotenv import load_dotenv
+except Exception:  # pragma: no cover
+    def load_dotenv(*args, **kwargs):
+        return False
 
 
 @dataclass(frozen=True)
@@ -24,10 +27,8 @@ class Settings:
     ma_fast: int
     ma_slow: int
 
-    db_path: Path
     poll_seconds: int
     price_source: str
-    db_type: str = "Postgres"  # "sqlite" or "postgres"
     postgres_dsn: str = ""
 
     telegram_enable: bool = False
@@ -50,7 +51,9 @@ def _env_bool(name: str, default: bool) -> bool:
 def load_settings() -> Settings:
     load_dotenv(override=False)
 
-    db_path = Path(os.getenv("DB_PATH", "data/paper.db")).expanduser()
+    postgres_dsn = os.getenv("POSTGRES_DSN", "").strip()
+    if not postgres_dsn:
+        raise RuntimeError("POSTGRES_DSN is required (PostgreSQL-only mode)")
 
     return Settings(
         app_env=os.getenv("APP_ENV", "dev"),
@@ -65,9 +68,7 @@ def load_settings() -> Settings:
         kill_switch_drawdown_pct=float(os.getenv("KILL_SWITCH_DRAWDOWN_PCT", "0.15")),
         ma_fast=int(os.getenv("MA_FAST", "10")),
         ma_slow=int(os.getenv("MA_SLOW", "30")),
-        db_path=db_path,
-        db_type=os.getenv("DB_TYPE", "sqlite").lower(),
-        postgres_dsn=os.getenv("POSTGRES_DSN", ""),
+        postgres_dsn=postgres_dsn,
         poll_seconds=int(os.getenv("POLL_SECONDS", "15")),
         price_source=os.getenv("PRICE_SOURCE", "binance"),
         telegram_enable=_env_bool("TELEGRAM_ENABLE", False),

@@ -29,7 +29,7 @@ def test_all_notifications():
         timeframe="1m",
         source="Binance REST",
         version="1.0.0",
-        db_name="paper.db"
+        db_name="postgres"
     )
     print(startup_msg)
     
