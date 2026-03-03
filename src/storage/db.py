@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from contextlib import contextmanager
 from pathlib import Path
@@ -21,14 +22,26 @@ class Database:
             import psycopg2.extras
         except Exception as exc:  # pragma: no cover - runtime dependency
             raise RuntimeError("psycopg2 is required for Postgres support") from exc
-
         dsn = os.getenv("POSTGRES_DSN", "")
         if not dsn:
             raise RuntimeError("POSTGRES_DSN must be set")
 
-        self.conn = psycopg2.connect(dsn)
-        self.conn.autocommit = False
+        # keep references for reconnect logic
+        self._dsn = dsn
+        self._psycopg2 = psycopg2
         self._pg_extras = psycopg2.extras
+        self._logger = logging.getLogger("storage.db")
+
+        # establish initial connection
+        self._connect()
+
+    def _connect(self) -> None:
+        try:
+            self.conn = self._psycopg2.connect(self._dsn)
+            self.conn.autocommit = False
+        except Exception as exc:  # pragma: no cover - operational failures surfaced at runtime
+            logging.getLogger("storage.db").exception("Failed to connect to Postgres: %s", exc)
+            raise
 
     def close(self) -> None:
         self.conn.close()
@@ -47,7 +60,14 @@ class Database:
         return sql.replace("?", "%s")
 
     def _execute(self, sql: str, params: tuple | list = (), commit: bool = True):
-        cur = self.conn.cursor(cursor_factory=self._pg_extras.RealDictCursor)
+        try:
+            cur = self.conn.cursor(cursor_factory=self._pg_extras.RealDictCursor)
+        except (self._psycopg2.InterfaceError, self._psycopg2.OperationalError) as exc:
+            # connection was closed by server or lost — try to reconnect once
+            self._logger.warning("DB connection lost, attempting reconnect: %s", exc)
+            self._connect()
+            cur = self.conn.cursor(cursor_factory=self._pg_extras.RealDictCursor)
+
         cur.execute(self._translate_sql(sql), params)
         if commit:
             self.conn.commit()
